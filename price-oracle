@@ -1,0 +1,66 @@
+import express from 'express';
+import fetch from 'node-fetch';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const CACHE_DURATION = parseInt(process.env.CACHE_DURATION) || 10 * 60 * 1000; // 10 minutes
+const COINGECKO_API_URL = process.env.COINGECKO_API_URL || 'https://api.coingecko.com/api/v3/simple/price';
+
+let priceCache = {};
+let lastFetchTime = 0;
+
+// Supported cryptos and their CoinGecko IDs
+const supportedCryptos = {
+  eth: 'ethereum',
+  btc: 'bitcoin',
+  usdc: 'usd-coin',
+};
+
+async function fetchPrices() {
+  const ids = Object.values(supportedCryptos).join(',');
+  const url = `${COINGECKO_API_URL}?ids=${ids}&vs_currencies=usd`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to fetch prices');
+  const data = await res.json();
+
+  for (const [key, id] of Object.entries(supportedCryptos)) {
+    priceCache[key] = data[id]?.usd || null;
+  }
+  lastFetchTime = Date.now();
+}
+
+async function priceCacheMiddleware(req, res, next) {
+  try {
+    if (Date.now() - lastFetchTime > CACHE_DURATION || !Object.keys(priceCache).length) {
+      await fetchPrices();
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
+app.use(priceCacheMiddleware);
+
+app.get('/price', (req, res) => {
+  const crypto = (req.query.crypto || '').toLowerCase();
+  if (!supportedCryptos[crypto]) {
+    return res.status(400).json({ error: 'Unsupported crypto symbol' });
+  }
+
+  const price = priceCache[crypto];
+  if (!price) {
+    return res.status(503).json({ error: 'Price data unavailable' });
+  }
+
+  res.json({ crypto, usdPrice: price });
+});
+
+app.get('/health', (req, res) => {
+  res.send('Price Oracle Service OK');
+});
+
+app.listen(PORT, () => {
+  console.log(`Price oracle service listening on port ${PORT}`);
+});
